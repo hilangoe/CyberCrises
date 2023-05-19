@@ -49,6 +49,19 @@ kdg2 <- kdg %>% rename(ccode2 = rivala, ccode1 = rivalb)
 
 df.kdg <- rbind(kdg1, kdg2)
 
+# adding in new peace (rivarly) data version of kdg
+
+peace <- read_csv("_data/_raw/peacedatav30dyadyrmean.csv", col_names = FALSE) %>%
+  rename(dyadid = X1, year = X2, peace = X3) %>%
+  filter(year>=2000)
+# this still leaves the issue of parsing the dyad ids..
+peace$ccode1 <- substr(peace$dyadid, 1, ifelse(nchar(peace$dyadid) == 6, 3, ifelse(nchar(peace$dyadid) == 5, 2, 1)))
+peace$ccode2 <- ifelse(nchar(peace$dyadid) == 4, substr(peace$dyadid, 2, 4),
+                    ifelse(nchar(peace$dyadid) == 5, substr(peace$dyadid, 3, 5),
+                           ifelse(nchar(peace$dyadid) == 6, substr(peace$dyadid, 4, 6), NA)))
+# removing the leading zero from ccode2
+peace$ccode2 <- as.numeric(peace$ccode2)
+
 # Merging dcid and icb ----------------------------------------------------
 
 
@@ -146,6 +159,8 @@ candidates <- filter(icb_dyad, cyber=="FALSE" & is.na(rivalry))
 candidates2 <- filter(icb_dyad, cyber=="FALSE" & !is.na(rivalry))
 # lot of crises with  no cyber and in rivalry
 # rivalry might be outdated
+
+# need to add in new peace data here to evaluate candidates
 
 
 # Creating DV from icb ----------------------------------------------------
