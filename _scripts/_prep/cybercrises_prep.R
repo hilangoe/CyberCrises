@@ -57,7 +57,10 @@ head(icb_dyad)
 
 # note: using dyadic-calculated start and end dates here. see icb documentation for details
 icb_dyad <- icb_dyad %>% mutate(startdate = make_date(year = trgyrdy, month = trgmody, day = trgdady)) %>%
-  mutate(enddate = make_date(year = trmyrdy, month = trmmody, day = trmdady))
+  mutate(enddate = make_date(year = trmyrdy, month = trmmody, day = trmdady)) %>%
+  select(-c("year", "ongoing")) %>%
+  distinct()
+# don't need yearly data on the dyads
 
 ### DO WE NEED TO EXCLUDE CRISES THAT STARTED BEFORE 2000?
 
@@ -151,12 +154,25 @@ candidates2 <- filter(icb_dyad, cyber=="FALSE" & !is.na(rivalry))
 #table(icb_dyad_test$outesr, icb_dyad_test$cyber)
 # this is not straightforward
 head(icb)
-test_outcome <- icb %>%
+icb <- icb %>%
   select(crisno, cracno, cracid, actor, crisname, yrtrig, outesr, yrterm) %>%
-  filter(., !yrterm<=2001) %>% 
+  filter(., !yrterm<2000) %>% 
   group_by(crisno) %>%
   mutate(n_dist_out = n_distinct(outesr)) %>%
   ungroup()
 # for some inexplicable reason, congo war has different outcomes per actor..
 # need to gen a var that indicates whether a crisis has different outcomes depending on case/actor
 
+# time to join
+
+icb_dyad <- left_join(icb_dyad, 
+                  icb %>% select(crisno, outesr, cracid), by = c("crisno" = "crisno", "statea" = "cracid")) %>%
+  rename(disp_out1 = outesr) %>%
+  left_join(., 
+            icb %>% select(crisno, outesr, cracid), 
+            by = c("crisno" = "crisno", "statea" = "cracid")) %>%
+  rename(disp_out2 = outesr)
+
+# let's check on some cross tabs
+table(icb_dyad$cyber, icb_dyad$disp_out1)
+table(icb_dyad$cyber, icb_dyad$disp_out2)
