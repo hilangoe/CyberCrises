@@ -33,13 +33,13 @@ head(kdg)
 
 # need to fix date vars. lubridate won't parse some, so doing it this way instead:
 # pulling year
-kdg$startyear <- substr(kdg$beginr, 1, 4)
-filter(kdg, is.na(startyear))
+kdg$startyear_kdg <- substr(kdg$beginr, 1, 4)
+filter(kdg, is.na(startyear_kdg))
 
-kdg$endyear <- substr(kdg$endr, 1, 4)
-filter(kdg, is.na(endyear))
+kdg$endyear_kdg <- substr(kdg$endr, 1, 4)
+filter(kdg, is.na(endyear_kdg))
 
-kdg <- kdg[kdg$endyear>=2000, ]
+kdg <- kdg[kdg$endyear_kdg>=2000, ]
 # issue here is that lot of rivalries ended in 2000 or 2001, but can't tell what's right-censored and which ones actually ended
 
 # creating directed dyadic data
@@ -61,9 +61,9 @@ peace$ccode2 <- ifelse(nchar(peace$dyadid) == 4, substr(peace$dyadid, 2, 4),
                            ifelse(nchar(peace$dyadid) == 6, substr(peace$dyadid, 4, 6), NA)))
 # removing the leading zero from ccode2
 peace$ccode2 <- as.numeric(peace$ccode2)
+peace$ccode1 <- as.numeric(peace$ccode1) # recasting
 
 # Merging dcid and icb ----------------------------------------------------
-
 
 # need to define and align date formats across both dataframes
 head(icb_dyad)
@@ -73,13 +73,18 @@ icb_dyad <- icb_dyad %>% mutate(startdate = make_date(year = trgyrdy, month = tr
   mutate(enddate = make_date(year = trmyrdy, month = trmmody, day = trmdady)) %>%
   select(-c("year", "ongoing")) %>%
   distinct()
-# don't need yearly data on the dyads
+# don't need yearly data on the dyads, do collapsing to dyad-level
 
 ### DO WE NEED TO EXCLUDE CRISES THAT STARTED BEFORE 2000?
 
 # filter and add rivalry data
-icb_dyad <- filter(icb_dyad, !enddate<'2001-1-1') %>%
+icb_dyad <- filter(icb_dyad, !enddate<'2000-1-1') %>%
   left_join(., df.kdg, by = c("statea" = "ccode1", "stateb" = "ccode2"))
+
+# joining in the newer peace data. since the latter is dyad-year, we'll join on TRGYRDY of icb
+icb_dyad <- icb_dyad %>%
+  left_join(., peace, by = c('statea' = 'ccode1', 'stateb' = 'ccode2', 'trgyrdy' = 'year')) %>%
+  select(-c('dyadid'))
 
 # Creating cyber variables ------------------------------------------------
 
@@ -92,6 +97,7 @@ icb_dyad <- icb_dyad %>%
           as.Date(sd) <= as.Date(dcid$interactionenddate) & 
           as.Date(ed) >= as.Date(dcid$interactionstartdate))
   }, statea, stateb, startdate, enddate))
+# cyber: dichotomous variable whether there is at least one cyber incident from dcid in icb
 
 # creating string variable with all ids for cyber incidents
 # collapses unique_ids to string with semicolon separator and replaces missing
@@ -111,9 +117,10 @@ icb_dyad <- icb_dyad %>%
       NA_character_
     }
   }, statea, stateb, startdate, enddate))
+# cyber_id: string list of cyber incident IDs from DCID
 
 # next step is to write another function that pulls out relevant vars from dcid based on values in 'cyber_id'
-# Split the "cyber_id" string variable in df1 into separate IDs
+# Split the "cyber_id" string variable in df1 into list of separate IDs
 df1_ids <- strsplit(icb_dyad$cyber_id, ";")
 
 # Create an empty vector to store the results
@@ -130,6 +137,7 @@ for (i in seq_along(df1_ids)) {
     sev5[i] <- TRUE
   }
 }
+# sev5: binary var for whether there are any cyber incidents of severity>=5 in icb
 
 # Add the new variable to df1
 icb_dyad$sev5 <- sev5
@@ -144,24 +152,43 @@ icb_dyad$max_severity <- sapply(df1_ids, function(ids) {
   }
   return(max_severity_val)
 })
+# max_severity_val: highest severity value of cyber incidents in each icb
 
 
 # Subsetting ICB dyadic ---------------------------------------------------
 
-# now need to remove ICB dyads that are outside of the scope
-filter(icb_dyad, cyber=="TRUE" & is.na(rivalry))
-# plenty of crises with cyber incidents not captured in KDG
-# NEED TO BE INCLUDED
+# from peace codebook: 
+# The peace scale has values 0.0 -- serious rivalry, .25 -- lesser rivalry, .50 -- negative peace, .75 -- warm peace, and 1.0 -- security community
 
-candidates <- filter(icb_dyad, cyber=="FALSE" & is.na(rivalry))
+# crises with no cyber and no rivalry coded in kdg
+candidates <- filter(icb_dyad, cyber=="FALSE" & is.na(rivalry)) %>%
+  select(crisno, crisname, statea, namea, stateb, nameb, startdate, enddate, endyear_kdg, rivnumb, peace, cyber)
 # these are the ones that need to be examined.
+# should probably keep those at peace=<0.25, drop is.na(peace) | peace>0.25
 
-candidates2 <- filter(icb_dyad, cyber=="FALSE" & !is.na(rivalry))
-# lot of crises with  no cyber and in rivalry
-# rivalry might be outdated
+candidates2 <- filter(icb_dyad, endyear_kdg==2000 & trgyrdy>2000 & cyber=="FALSE") %>%
+  select(crisno, crisname, statea, namea, stateb, nameb, startdate, enddate, endyear_kdg, rivnumb, peace, cyber)
 
-# need to add in new peace data here to evaluate candidates
+df.cand <- rbind(candidates, candidates2)
 
+# now need to cut dyads that were checked for DCID
+cand_cut <- data.frame(ccode1 = c("630", "630", "2", "2", "640", "652"),
+                       ccode2 = c("666", "640", "630", "731", "652", "666"))
+
+df.cand <- df.cand %>%
+  mutate(cut = mapply(function(a, b) {
+    any(a == cand_cut$ccode1 & b == cand_cut$ccode2)
+  }, statea, stateb)) %>%
+  filter(., cut=="FALSE") %>%
+  select(-c("cut"))
+
+# exporting this to check with co-authors
+write.csv(df.cand, "_data/_processed/icb_candidates_dropped.csv", row.names=FALSE)
+
+# crises with no cyber but included in kdg as of 1/1/2000
+candidates3 <- filter(icb_dyad, cyber=="FALSE" & !is.na(rivalry))
+# rivalry might be outdated, but should probably be included
+# only one observation of peace>0.25 that maybe should be dropped
 
 # Creating DV from icb ----------------------------------------------------
 
