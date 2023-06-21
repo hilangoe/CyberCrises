@@ -296,13 +296,42 @@ dyad_year.icb2 <- icb_dyad_year %>%
 dyad_year.icb <- rbind(dyad_year.icb, dyad_year.icb2)
 table(dyad_year.icb$crisis_onset, dyad_year.icb$ongoing)
 
-# M2: Join DCID, and general dyad-year df ----------------------------------
+# M2: Final join ----------------------------------
 
-# not sure I need both dcid-specific crisis and general icb crisis
+# Join DCID, and general dyad-year df
+
+df2 <- dyadyears %>%
+  filter(., year>=1999) %>%
+  left_join(., dyad_year.icb, by = c('ccode1', 'ccode2', 'year')) %>%
+  left_join(., dcid_dyadyear, by = c('ccode1', 'ccode2', 'year')) %>%
+  left_join(., peace, by = c('ccode1', 'ccode2', 'year')) %>%
+  left_join(., vdem.vars1, by =c('ccode1', 'year')) %>%
+  left_join(., vdem.vars2, by =c('ccode2', 'year')) %>%
+  left_join(., terr, by =c('ccode1', 'ccode2', 'year')) %>%
+  left_join(., milex_df1, by =c('ccode1', 'year')) %>%
+  left_join(., milex_df2, by =c('ccode2', 'year')) %>% # lot of missing values here now, lot for Syria
+  select(-c('date')) %>%
+  filter(peace<0.5|incidents>0) # wide net to include rivalry dyads
+
+# dealing with missing
+df2$hostlev[is.na(df2$hostlev)] <- 0
+df2$terr_dispute[is.na(df2$terr_dispute)] <- 0
+df2$incidents[is.na(df2$incidents)] <- 0
+df2$crisis_onset[is.na(df2$crisis_onset)] <- 0
+df2$ongoing[is.na(df2$ongoing)] <- 0
+
+# creating alt dv because icb-based dv means some dyad-years might have cyber and and icb, but not fit the 180-day range
+df2 <- df2 %>%
+  mutate(crisis_alt = ifelse(crisis_onset==1 & incidents==0, 0, crisis_onset)) %>%
+  mutate(cyber = ifelse(incidents>0, 1, 0))
 
 # M2: Descriptive statistics and crosstabs --------------------------------
 
-
+table(df2$crisis_onset)
+table(df2$cyber)
+table(df2$crisis_alt, df2$crisis_onset)
+table(df2$cyber, df2$crisis_onset)
+# this does not seem to suggest that cyber is positively associated with crises
 
 # M3: Merging dcid and icb ----------------------------------------------------
 
@@ -461,7 +490,27 @@ table(df3_binary$disp_out1, df3_binary$cyber)
 
 prop.test(x=c(39, 28), n=c(41, 32), correct=F)
 
-m2 <- glm(disp_out1 ~ cyber, family = binomial, data = df3_binary)
-m2
-coeftest(m2)
+m3 <- glm(disp_out1 ~ cyber, family = binomial, data = df3_binary)
+m3
+coeftest(m3)
 # insignificant, but in the right direction
+
+# M3: Final join ----------------------------------------------------------
+
+df3 <- df3 %>%
+  rename(year = trgyrdy, ccode1 = statea, ccode2 = stateb) %>%
+  left_join(., vdem.vars1, by =c('ccode1', 'year')) %>%
+  left_join(., vdem.vars2, by =c('ccode2', 'year')) %>%
+  left_join(., terr, by =c('ccode1', 'ccode2', 'year')) %>%
+  left_join(., milex_df1, by =c('ccode1', 'year')) %>%
+  left_join(., milex_df2, by =c('ccode2', 'year')) %>% # lot of missing values here now, lot for Syria
+  left_join(., dyadyears %>% 
+              dplyr::select(ccode1, ccode2, year, hostlev), 
+            by =c('ccode1', 'ccode2', 'year')) %>%
+  select(-c('date')) %>%
+  filter(peace<0.5|cyber==TRUE) # wide net to include rivalry dyads
+# some missing values on outcome
+
+# dealing with missing, double check these and df!
+df3$hostlev[is.na(df3$hostlev)] <- 0
+df3$terr_dispute[is.na(df3$terr_dispute)] <- 0
