@@ -17,6 +17,7 @@ library(lmtest)
 library(peacesciencer)
 library(vdemdata)
 library(magrittr)
+library(caret)
 
 # Pulling data ------------------------------------------------------------
 
@@ -98,7 +99,7 @@ peace$ccode1 <- as.numeric(peace$ccode1) # recasting
 
 # generating basic dyad-year dataset with peace sciencer, which will double as source of many covars and the basic structure for df2
 # this adds in covars for MID hostility, military expenditure
-dyadyears <- create_dyadyears(system = "cow", directed = TRUE, subset_years = c(1999:2020)) %>%
+dyadyears <- create_dyadyears(system = "cow", directed = TRUE, subset_years = c(1999:2016)) %>%
   add_cow_mids() %>%
   add_nmc() %>%
   select(ccode1, ccode2, year, cowmidongoing, cowmidonset, hostlev, milex1, milex2) # dropping most vars
@@ -130,7 +131,12 @@ milex_df1 <- milex_df %>%
   mutate(year = as.numeric(year)) %>%
   select(-c('Country')) %>%
   group_by(ccode1, year) %>%
-  summarise(sipri_milex1 = max(sipri_milex1)) # to deal with multiple entries per year
+  summarise(sipri_milex1 = max(sipri_milex1)) %>% # to deal with multiple entries per year
+  ungroup()
+
+# rescaling to 0 to 1
+milex_df1$sipri_milex1 <- (milex_df1$sipri_milex1 - min(milex_df1$sipri_milex1, na.rm = TRUE)) /
+  (max(milex_df1$sipri_milex1, na.rm = TRUE) - min(milex_df1$sipri_milex1, na.rm = TRUE))
 
 milex_df2 <- milex_df1 %>%
   rename(ccode2 = ccode1, sipri_milex2 = sipri_milex1)
@@ -279,16 +285,20 @@ table(dcid_dyadyear$incidents)
 # awful naming, but need to distinguish it
 dyad_year.icb <- icb_dyad_year %>%
   mutate(crisis_onset = ifelse(trgyrdy==year, 1, 0)) %>%
+  mutate(startdate = make_date(year = trgyrdy, month = trgmody, day = trgdady)) %>%
+  mutate(enddate = make_date(year = trmyrdy, month = trmmody, day = trmdady)) %>%
   group_by(statea, stateb, year) %>%
-  summarise(crisis_onset = max(crisis_onset), ongoing = max(ongoing)) %>% # gonna leave out severity for now
+  summarise(crisis_onset = max(crisis_onset), ongoing = max(ongoing), startdate_icb_min = min(startdate)) %>% # gonna leave out severity for now
   ungroup() %>%
   filter(., year>=1999) %>% # don't need observations before 1999 (keeping those for lagged DV)
   rename(ccode1 = statea, ccode2  = stateb)
 # need second df for directed dyad
 dyad_year.icb2 <- icb_dyad_year %>%
   mutate(crisis_onset = ifelse(trgyrdy==year, 1, 0)) %>%
+  mutate(startdate = make_date(year = trgyrdy, month = trgmody, day = trgdady)) %>%
+  mutate(enddate = make_date(year = trmyrdy, month = trmmody, day = trmdady)) %>%
   group_by(statea, stateb, year) %>%
-  summarise(crisis_onset = max(crisis_onset), ongoing = max(ongoing)) %>% # gonna leave out severity for now
+  summarise(crisis_onset = max(crisis_onset), ongoing = max(ongoing), startdate_icb_min = min(startdate)) %>% # gonna leave out severity for now
   ungroup() %>%
   filter(., year>=1999) %>% # don't need observations before 1999 (keeping those for lagged DV)
   rename(ccode2 = statea, ccode1  = stateb)
@@ -313,17 +323,49 @@ df2 <- dyadyears %>%
   select(-c('date')) %>%
   filter(peace<0.5|incidents>0) # wide net to include rivalry dyads
 
+# adding in previous severe cyber separately
+# creating covar for previous severe incident
+df2 <- df2 %>%
+  mutate(previous_sev = mapply(function(a, b, sd) {
+    any((a == dcid$ccode1 | b == dcid$ccode1) &
+          sd > lubridate::year(dcid$interactionstartdate) &
+          dcid$severity>=5)
+  }, ccode1, ccode2, year))
+table(df2$previous_sev)
+df2 %<>% mutate_if(is.logical, as.numeric)
+
+# creating dummy to see if any icb started before cyber incidents
+
+df2 <- df2 %>%
+  mutate(reverse = mapply(function(a, b, sd, sy) {
+    any(a == dcid$ccode1 & b == dcid$ccode2 &
+          incidents>0 &
+          sy == lubridate::year(dcid$interactionstartdate) &
+          sd < as.Date(dcid$interactionstartdate))
+  }, ccode1, ccode2, startdate_icb_min, year))
+table(df2$reverse)
+df2 %<>% mutate_if(is.logical, as.numeric)
+
+
 # dealing with missing
 df2$hostlev[is.na(df2$hostlev)] <- 0
 df2$terr_dispute[is.na(df2$terr_dispute)] <- 0
 df2$incidents[is.na(df2$incidents)] <- 0
 df2$crisis_onset[is.na(df2$crisis_onset)] <- 0
 df2$ongoing[is.na(df2$ongoing)] <- 0
+df2$nextyear[is.na(df2$nextyear)] <- 0
+df2$reverse[is.na(df2$reverse)] <- 0
 
 # creating alt dv because icb-based dv means some dyad-years might have cyber and and icb, but not fit the 180-day range
+# this is not right and needs to be amended
 df2 <- df2 %>%
   mutate(crisis_alt = ifelse(crisis_onset==1 & incidents==0, 0, crisis_onset)) %>%
   mutate(cyber = ifelse(incidents>0, 1, 0))
+
+# create dyad ID for cluster-robust SEs
+df2 <- df2 %>%
+  mutate(dyadid = as.numeric(factor(paste(pmin(ccode1, ccode2),
+                                          pmax(ccode1, ccode2), sep="-"))))
 
 # M2: Descriptive statistics and crosstabs --------------------------------
 
@@ -339,6 +381,7 @@ table(df2$cyber, df2$crisis_onset)
 
 # filter and add rivalry data
 df3 <- filter(icb_dyad, !enddate<'2000-1-1') %>%
+  filter(., !startdate>'2016-12-31') %>%
   left_join(., df.kdg, by = c("statea" = "ccode1", "stateb" = "ccode2"))
 
 # joining in the newer peace data. since the latter is dyad-year, we'll join on TRGYRDY of icb
@@ -353,7 +396,7 @@ df3 <- df3 %>%
 # this seems to work: for each row in df3, see if there is a matching obs in dcid
 df3 <- df3 %>%
   mutate(cyber = mapply(function(a, b, sd, ed) {
-    any(a == dcid$ccode1 & b == dcid$ccode2 & 
+    any(((a == dcid$ccode1 & b == dcid$ccode2) | (a == dcid$ccode2 & b == dcid$ccode1)) & 
           as.Date(sd) <= as.Date(dcid$interactionenddate) & 
           as.Date(ed) >= as.Date(dcid$interactionstartdate))
   }, statea, stateb, startdate, enddate))
@@ -473,28 +516,6 @@ df3 <- left_join(df3,
             by = c("crisno" = "crisno", "statea" = "cracid")) %>%
   rename(disp_out2 = outesr) # doing two outcomes because there is at least one crisis with different outcomes per actor
 
-
-# M3: Desc and test -----------------------------------------------------------
-
-# let's check on some cross tabs
-table(df3$cyber, df3$disp_out1)
-table(df3$cyber, df3$disp_out2)
-
-df3_binary <- filter(df3, disp_out1<3)
-df3_binary$disp_out1[df3_binary$disp_out1==1] <- 0
-df3_binary$disp_out1[df3_binary$disp_out1==2] <- 1
-
-df3_binary$disp_out1 <- as.integer(df3_binary$disp_out1)
-
-table(df3_binary$disp_out1, df3_binary$cyber)
-
-prop.test(x=c(39, 28), n=c(41, 32), correct=F)
-
-m3 <- glm(disp_out1 ~ cyber, family = binomial, data = df3_binary)
-m3
-coeftest(m3)
-# insignificant, but in the right direction
-
 # M3: Final join ----------------------------------------------------------
 
 df3 <- df3 %>%
@@ -514,3 +535,23 @@ df3 <- df3 %>%
 # dealing with missing, double check these and df!
 df3$hostlev[is.na(df3$hostlev)] <- 0
 df3$terr_dispute[is.na(df3$terr_dispute)] <- 0
+
+# adding in previous severe cyber separately
+# creating covar for previous severe incident
+df3 <- df3 %>%
+  mutate(previous_sev = mapply(function(a, b, sd) {
+    any((a == dcid$ccode1 | b == dcid$ccode1) &
+          as.Date(sd) > as.Date(dcid$interactionstartdate) &
+          dcid$severity>=5)
+  }, ccode1, ccode2, startdate))
+table(df3$previous_sev)
+df3 %<>% mutate_if(is.logical, as.numeric)
+
+# dropping recent cases to make it binary outcome
+df3 <- filter(df3, disp_out1<3)
+#flipping order of outcome, so 1 is escalation, and 0 is reduction
+df3$disp_out1[df3$disp_out1==2] <- 0
+
+df3$disp_out1 <- as.integer(df3$disp_out1)
+
+table(df3$disp_out1)
