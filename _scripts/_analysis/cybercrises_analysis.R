@@ -85,3 +85,6 @@ summary(m3_sparse)
 # all together
 
 stargazer(m1, m2_alt, m3_sparse, type = "html", out = "_output/_tables/modelsummary.html")
+
+stargazer(m2_random, type = "html", out = "_output/_tables/m2_random_modelsummary.html")
+
