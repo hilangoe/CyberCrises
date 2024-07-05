@@ -60,6 +60,35 @@ icb_dyad <- icb_dyad_year %>% mutate(startdate = make_date(year = trgyrdy, month
 # need main icb for outcome variables, including "outesr" (easing or increasing tension post-crisis)
 icb <- read_csv("_data/_raw/icb2v15.csv")
 
+# wrangling near crises data from Iakhnis and James 2021
+nc <- read_excel("_data/_raw/nc2v1_actor_level_finalized.xlsx")
+
+nc <- nc %>%
+  filter(YERTRIG>=2000) %>%
+  rename(ccode1 = CRACID)
+head(nc)
+
+df <- nc %>%
+  group_by(CRISNO) %>%
+  slice(1) %>%
+  ungroup()
+head(df)
+
+# joining the first observation per crisis with the rest to create dyadic dataframe
+# direction (triggering entity) doesn't matter for this purpose
+nc_dyad <- df %>%
+  left_join(nc %>%
+              group_by(CRISNO) %>%
+              slice(-1) %>%
+              ungroup() %>%
+              rename(ccode2 = ccode1) %>%
+              select(CRISNO, ccode2),
+            by = c("CRISNO")) %>%
+  relocate(ccode2, .after = 4) %>%
+  mutate(startdate = make_date(YERTRIG, MONTRIG, DAYTRIG)) %>%
+  relocate(startdate, .after = 5)
+head(nc_dyad)
+
 # need rivalry data to subset icb for df2 and df3
 kdg <- read_csv("_data/_raw/kdg.csv")
 head(kdg)
@@ -238,6 +267,16 @@ df1 <- df1 %>%
 table(df1$crisis_sev, df1$nextyear_sev)
 # no positive obs
 
+# creating near crisis var
+df <- df1 %>%
+  mutate(nearcrisis = mapply(function(a, b, sd) {
+    any(((a == nc_dyad$ccode1 & b == nc_dyad$ccode2) | (b == nc_dyad$ccode1 & a == nc_dyad$ccode2)) &
+          as.Date(sd) <= as.Date(nc_dyad$startdate) &
+          as.Date(sd + days(180)) >= as.Date(nc_dyad$startdate))
+  }, ccode1, ccode2, interactionstartdate))
+table(df$nearcrisis)
+# none!! that needs to be validated
+
 # changing from boolean to numerical
 df1 %<>% mutate_if(is.logical, as.numeric)
 
@@ -306,6 +345,34 @@ dyad_year.icb2 <- icb_dyad_year %>%
 dyad_year.icb <- rbind(dyad_year.icb, dyad_year.icb2)
 table(dyad_year.icb$crisis_onset, dyad_year.icb$ongoing)
 
+
+# M2: Prepping NC ---------------------------------------------------------
+
+# let's make sure we don't need to aggregate up to dyad-year
+nc_dyad %>% 
+  count(ccode1, ccode2, year(startdate)) %>%
+  summarise(dupes = any(n>1)) %>%
+  pull(dupes)
+# no dupes on dyad-year level
+
+# now removing any extraneous vars
+nc_dirdyad <- nc_dyad %>%
+  select(ccode1, ccode2, startdate) %>%
+  mutate(nearcrisis = 1, # will need to change from NA to 0 in main df after join
+         year = year(startdate)) %>% 
+  rename(startdate_nc = startdate)
+
+# now creating directed dyad by creating second df before rbind
+nc_dirdyad2 <- nc_dirdyad %>%
+  mutate(
+    temp = ccode1,
+    ccode1 = ccode2,
+    ccode2 = temp) %>%
+  select(-temp)
+
+nc_dirdyad <- rbind(nc_dirdyad, nc_dirdyad2)
+
+
 # M2: Final join ----------------------------------
 
 # Join DCID, and general dyad-year df
@@ -313,6 +380,7 @@ table(dyad_year.icb$crisis_onset, dyad_year.icb$ongoing)
 df2 <- dyadyears %>%
   filter(., year>=1999) %>%
   left_join(., dyad_year.icb, by = c('ccode1', 'ccode2', 'year')) %>%
+  left_join(., nc_dirdyad, by = c('ccode1', 'ccode2', 'year')) %>%
   left_join(., dcid_dyadyear, by = c('ccode1', 'ccode2', 'year')) %>%
   left_join(., peace, by = c('ccode1', 'ccode2', 'year')) %>%
   left_join(., vdem.vars1, by =c('ccode1', 'year')) %>%
@@ -322,7 +390,7 @@ df2 <- dyadyears %>%
   left_join(., milex_df2, by =c('ccode2', 'year')) %>% # lot of missing values here now, lot for Syria
   select(-c('date')) %>%
   filter(peace<0.5|incidents>0) # wide net to include rivalry dyads
-
+  
 # adding in previous severe cyber separately
 # creating covar for previous severe incident
 df2 <- df2 %>%
@@ -335,7 +403,6 @@ table(df2$previous_sev)
 df2 %<>% mutate_if(is.logical, as.numeric)
 
 # creating dummy to see if any icb started before cyber incidents
-
 df2 <- df2 %>%
   mutate(reverse = mapply(function(a, b, sd, sy) {
     any(a == dcid$ccode1 & b == dcid$ccode2 &
@@ -344,6 +411,17 @@ df2 <- df2 %>%
           sd < as.Date(dcid$interactionstartdate))
   }, ccode1, ccode2, startdate_icb_min, year))
 table(df2$reverse)
+
+# creating dummy to see if any nc started before cyber incidents
+df2 <- df2 %>%
+  mutate(reverse_nc = mapply(function(a, b, sd, sy) {
+    any(a == dcid$ccode1 & b == dcid$ccode2 &
+          incidents>0 &
+          sy == lubridate::year(dcid$interactionstartdate) &
+          sd < as.Date(dcid$interactionstartdate))
+  }, ccode1, ccode2, startdate_nc, year))
+table(df2$reverse_nc)
+
 df2 %<>% mutate_if(is.logical, as.numeric)
 
 
@@ -352,9 +430,12 @@ df2$hostlev[is.na(df2$hostlev)] <- 0
 df2$terr_dispute[is.na(df2$terr_dispute)] <- 0
 df2$incidents[is.na(df2$incidents)] <- 0
 df2$crisis_onset[is.na(df2$crisis_onset)] <- 0
+df2$nearcrisis[is.na(df2$nearcrisis)] <- 0
 df2$ongoing[is.na(df2$ongoing)] <- 0
 df2$nextyear[is.na(df2$nextyear)] <- 0
 df2$reverse[is.na(df2$reverse)] <- 0
+df2$reverse_nc[is.na(df2$reverse_nc)] <- 0
+
 
 # creating alt dv because icb-based dv means some dyad-years might have cyber and and icb, but not fit the 180-day range
 # this is not right and needs to be amended
@@ -374,6 +455,12 @@ table(df2$cyber)
 table(df2$crisis_alt, df2$crisis_onset)
 table(df2$cyber, df2$crisis_onset)
 # this does not seem to suggest that cyber is positively associated with crises
+
+# let's look at near crisis
+table(df2$cyber, df2$nearcrisis)
+filter(df2, cyber==1 & nearcrisis==1 & reverse_nc==1)
+df2 %>% filter(reverse_nc==0) %>% with(table(cyber, nearcrisis))
+# so only positive observations are near crises happening in the same year as cyber incident, but before
 
 # M3: Merging dcid and icb ----------------------------------------------------
 

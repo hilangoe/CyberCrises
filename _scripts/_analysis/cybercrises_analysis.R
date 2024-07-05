@@ -9,6 +9,8 @@ library(ggplot2)
 library(sandwich)
 library(plm)
 library(stargazer)
+library(knitr)
+library(kableExtra)
 
 
 # M1 ----------------------------------------------------------------------
@@ -82,9 +84,31 @@ summary(m3)
 m3_sparse <- glm(disp_out1 ~ cyber + hostlev + previous_sev + v2x_polyarchy1 + v2x_polyarchy2 + terr_dispute, family = binomial, data = df3)
 summary(m3_sparse)
 
+# chi-square
+chisq.test(df3$disp_out1, df3$cyber, correct=FALSE)
+
+# crosstabs
+m3_cross <- table(df3$disp_out1, df3$cyber)
+m3_cross
+class(m3_cross)
+
 # all together
 
-stargazer(m1, m2_alt, m3_sparse, type = "html", out = "_output/_tables/modelsummary.html")
+stargazer(m1, type = "html", out = "_output/_tables/m1.html")
 
-stargazer(m2_random, type = "html", out = "_output/_tables/m2_random_modelsummary.html")
+stargazer(m2_alt, m2_random, type = "html", out = "_output/_tables/m2.html")
 
+
+m3_cross_df <- data.frame(
+  Row = row.names(m3_cross),
+  Outcome1 = c(m3_cross[1, 1], m3_cross[2, 1]),
+  Outcome2 = c(m3_cross[1, 2], m3_cross[2, 2])
+)
+
+table_html <- kable(m3_cross_df, format = "html", caption = "Cross-tabulation of dispute outcomes and cyber incidents.")
+writeLines(capture.output(table_html), "_output/_tables/m3_cross.html")
+
+
+#stargazer(m3_cross, type = "html", out = "_output/_tables/m3_cross.html")
+
+stargazer(m3_sparse, type = "html", out = "_output/_tables/m3.html")
